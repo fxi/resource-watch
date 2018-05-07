@@ -186,20 +186,77 @@ class GlobeCesiumComponent extends PureComponent {
     }
     // -------- zoom level updates -------------
     if (this.props.zoom !== nextProps.zoom) {
-      const { camera } = this.viewer;
-      const increment = this.props.zoom - nextProps.zoom;
-      const difference = camera.getMagnitude() - this.viewer.scene.globe.ellipsoid.maximumRadius;
-      const smallerScalar = difference < 1000000;
-      let scalar = smallerScalar ? 0.95 : 0.7;
-      if (increment < 0) {
-        scalar = smallerScalar ? 1.005 : 1.3;
+      const { scene } = this.viewer;
+      const zoom = 1 / nextProps.zoom;
+
+      const sscc = scene.screenSpaceCameraController;
+      // do not zoom if it is disabled
+      if (!sscc.enableInputs || !sscc.enableZoom) {
+        return;
       }
-      const newPosition = {
-        x: camera.position.x * scalar,
-        y: camera.position.y * scalar,
-        z: camera.position.z * scalar
-      };
-      this.viewer.camera.flyTo({ destination: newPosition, duration: 1.5 });
+
+      const { camera } = scene;
+      let orientation;
+
+      switch (scene.mode) {
+        case Cesium.SceneMode.MORPHING:
+          break;
+        case Cesium.SceneMode.SCENE2D:
+          camera.zoomIn(camera.positionCartographic.height * (1 - zoom));
+          break;
+        default: {
+          let focus = new Cesium.Cartesian3();
+
+          if (!Cesium.defined(focus)) {
+            // Camera direction is not pointing at the globe, so use the ellipsoid horizon point as
+            // the focal point.
+            const ray = new Cesium.Ray(camera.worldToCameraCoordinatesPoint(scene.globe.ellipsoid.cartographicToCartesian(camera.positionCartographic)), camera.directionWC);
+            focus = Cesium.IntersectionTests.grazingAltitudeLocation(ray, scene.globe.ellipsoid);
+
+            orientation = {
+              heading: camera.heading,
+              pitch: camera.pitch,
+              roll: camera.roll
+            };
+          } else {
+            orientation = {
+              direction: camera.direction,
+              up: camera.up
+            };
+          }
+
+          const direction = Cesium.Cartesian3.subtract(camera.position, focus, new Cesium.Cartesian3());
+          const movementVector = Cesium.Cartesian3.multiplyByScalar(direction, zoom, direction);
+          const endPosition = Cesium.Cartesian3.add(focus, movementVector, focus);
+
+          if (Cesium.defined(this.viewer.trackedEntity) || scene.mode == Cesium.SceneMode.COLUMBUS_VIEW) {
+            // sometimes flyTo does not work (jumps to wrong position) so just set the position without any animation
+            // do not use flyTo when tracking an entity because during animatiuon the position of the entity may change
+            camera.position = endPosition;
+          } else {
+            camera.flyTo({
+              destination: endPosition,
+              orientation,
+              duration: 0.5,
+              convert: false
+            });
+          }
+        }
+      }
+      // const { camera } = this.viewer;
+      // const increment = this.props.zoom - nextProps.zoom;
+      // const difference = camera.getMagnitude() - this.viewer.scene.globe.ellipsoid.maximumRadius;
+      // const smallerScalar = difference < 1000000;
+      // let scalar = smallerScalar ? 0.95 : 0.7;
+      // if (increment < 0) {
+      //   scalar = smallerScalar ? 1.005 : 1.3;
+      // }
+      // const newPosition = {
+      //   x: camera.position.x * scalar,
+      //   y: camera.position.y * scalar,
+      //   z: camera.position.z * scalar
+      // };
+      // this.viewer.camera.flyTo({ destination: newPosition, duration: 1.5 });
     }
 
     // ---------- initialPosition ----------
@@ -513,9 +570,7 @@ class GlobeCesiumComponent extends PureComponent {
           const position = Cesium.Cartesian3.fromDegrees(shape.lon, shape.lat);
           this.viewer.entities.add({
             position,
-            billboard: {
-              image: shape.image
-            },
+            billboard: { image: shape.image },
             name: shape.name,
             type: 'billboard',
             imageSelected: shape.imageSelected,
@@ -570,7 +625,7 @@ GlobeCesiumComponent.propTypes = {
   // Store
   setShapesCreated: PropTypes.func.isRequired,
   globeCesium: PropTypes.object.isRequired,
-  labelsPulse:PropTypes.object.isRequired,
+  labelsPulse: PropTypes.object.isRequired,
 
   // Callbacks
   onClick: PropTypes.func,
